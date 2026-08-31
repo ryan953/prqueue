@@ -52,6 +52,14 @@ sed -e "s/__VERSION__/$VERSION/g" -e "s/__EXECUTABLE__/$EXECUTABLE_NAME/g" \
 plutil -lint "$APP/Contents/Info.plist" >/dev/null
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
+# A missing icon leaves a blank tile in the Dock rather than failing the build,
+# so the app is still usable if the render breaks.
+if "$ROOT/Scripts/make-icon.sh" "$APP/Contents/Resources/AppIcon.icns"; then
+  echo "==> Icon generated"
+else
+  echo "==> Skipping icon (generation failed)" >&2
+fi
+
 # Ad-hoc signature. Without it macOS refuses to launch an arm64 binary that has
 # been moved or unzipped, which is exactly what a release download is.
 codesign --force --deep --sign - "$APP" 2>/dev/null || echo "==> codesign unavailable, continuing" >&2
