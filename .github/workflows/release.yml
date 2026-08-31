@@ -1,18 +1,12 @@
 name: Release
 
+# On demand only: a tag push should not decide when something ships.
 on:
-  push:
-    tags: ["v*"]
   workflow_dispatch:
     inputs:
       version:
         description: "Version to build (e.g. 1.2.3)"
         required: true
-      update_tap:
-        description: "Bump the prqueue cask in ryan953/homebrew-tap"
-        required: false
-        type: boolean
-        default: true
 
 permissions:
   contents: write
@@ -20,32 +14,27 @@ permissions:
 jobs:
   release:
     runs-on: macos-15
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Show toolchain
-        run: swift --version
-
-      # Settle on both spellings of the version once, so the tag, the
-      # Info.plist and the tap bump can never disagree about the leading "v".
       - name: Work out the version
         id: version
         env:
           INPUT_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            SHORT="${INPUT_VERSION#v}"
-          else
-            SHORT="${GITHUB_REF_NAME#v}"
-          fi
-          if [[ ! "$SHORT" =~ ^[0-9]+(\.[0-9]+)*([-+][0-9A-Za-z.-]+)?$ ]]; then
-            echo "version must look like 0.1.0 or v0.1.0, got '$SHORT'" >&2
+          VERSION="${INPUT_VERSION#v}"
+          # A typo here becomes a public tag and a cask pointing at nothing, so
+          # refuse it before anything is published.
+          if [[ ! "$VERSION" =~ ^[0-9]+(\.[0-9]+)*([-+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "version must look like 0.1.0 or v0.1.0, got '$INPUT_VERSION'" >&2
             exit 1
           fi
-          echo "version=$SHORT" >> "$GITHUB_OUTPUT"
-          echo "tag=v$SHORT" >> "$GITHUB_OUTPUT"
-          echo "Building $SHORT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building $VERSION"
 
       - name: Test
         run: swift test
@@ -122,42 +111,16 @@ jobs:
               --notes-file notes.md
           fi
 
-      # github.token is scoped to this repository, so pushing to the tap needs a
-      # PAT in the TAP_TOKEN secret, with Contents: Read+Write on
-      # ryan953/homebrew-tap. This repository is public, so the tap's bump
-      # script needs no extra scope to download the asset it checksums. With no
-      # token the release still stands; only the cask is left behind, and the
-      # summary says how to bump it by hand.
-      - name: Bump the Homebrew cask
-        if: ${{ github.event_name == 'push' || inputs.update_tap }}
-        env:
-          TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          set -euo pipefail
-          if [ -z "${TAP_TOKEN}" ]; then
-            echo "::warning::TAP_TOKEN is not set — leaving ryan953/homebrew-tap alone."
-            {
-              echo "### Homebrew tap not updated"
-              echo
-              echo "\`TAP_TOKEN\` is not set. Bump the cask by hand:"
-              echo
-              echo '```sh'
-              echo "scripts/bump-cask.sh prqueue ${VERSION}"
-              echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-          git clone --depth 1 \
-            "https://x-access-token:${TAP_TOKEN}@github.com/ryan953/homebrew-tap.git" tap
-          cd tap
-          # The tap owns the bump logic (find the release asset, rewrite version
-          # and sha256). Reuse it rather than keeping a second copy of that
-          # knowledge here.
-          HOMEBREW_GITHUB_API_TOKEN="${TAP_TOKEN}" \
-            scripts/bump-cask.sh prqueue "${VERSION}"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -am "prqueue ${VERSION}"
-          git push
-          echo "Bumped ryan953/tap/prqueue to ${VERSION}" >> "$GITHUB_STEP_SUMMARY"
+  # Hangs off the release job, not `release: published`: that event never
+  # fires, because GitHub suppresses workflow triggers for anything a
+  # GITHUB_TOKEN did, and the release above is created with github.token.
+  # Needs a TAP_TOKEN secret; without it this job fails and the release stands.
+  tap:
+    needs: release
+    uses: ryan953/homebrew-tap/.github/workflows/bump.yml@main
+    with:
+      kind: cask
+      name: prqueue
+      version: ${{ needs.release.outputs.tag }}
+    secrets:
+      TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
