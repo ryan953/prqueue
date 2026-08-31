@@ -54,12 +54,23 @@ A request addressed to you by name is never muted.
 
 The app reads its token from `gh`, so there is no separate login.
 
+## Install
+
+```sh
+brew install --cask --no-quarantine ryan953/tap/prqueue
+```
+
+`--no-quarantine` because the app is ad-hoc signed but not notarized.
+
 ## Build and run
 
 ```sh
-Scripts/bundle.sh        # builds PRQueue.app
-open PRQueue.app
+Scripts/bundle.sh        # builds dist/PRQueue.app
+open dist/PRQueue.app
 ```
+
+`--version 1.2.3` stamps the bundle, and `--universal` builds for both Apple
+silicon and Intel, which is what a release does.
 
 Development:
 

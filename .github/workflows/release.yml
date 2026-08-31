@@ -1,0 +1,126 @@
+name: Release
+
+# On demand only: a tag push should not decide when something ships.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build (e.g. 1.2.3)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Work out the version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          VERSION="${INPUT_VERSION#v}"
+          # A typo here becomes a public tag and a cask pointing at nothing, so
+          # refuse it before anything is published.
+          if [[ ! "$VERSION" =~ ^[0-9]+(\.[0-9]+)*([-+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "version must look like 0.1.0 or v0.1.0, got '$INPUT_VERSION'" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building $VERSION"
+
+      - name: Test
+        run: swift test
+
+      # Universal so the download runs on both Apple silicon and Intel.
+      - name: Build the app bundle
+        run: Scripts/bundle.sh --version "${{ steps.version.outputs.version }}" --universal
+
+      - name: Check the binary is universal
+        run: lipo -info "dist/PRQueue.app/Contents/MacOS/PRQueue"
+
+      - name: Zip the app
+        run: |
+          cd dist
+          # ditto keeps the bundle's resource forks and symlinks; `zip` does not.
+          ditto -c -k --sequesterRsrc --keepParent "PRQueue.app" \
+            "PRQueue-${{ steps.version.outputs.version }}-macos-universal.zip"
+
+      - name: Write the release notes
+        run: |
+          cat > notes.md <<'NOTES'
+          A native macOS app that turns the GitHub review queue into something
+          workable. Every open pull request lands in exactly one lane — Needs
+          you, My PRs, Blocked on author, Bots, Already approved, Drafts, Stale,
+          Snoozed, Muted — before any scoring, so the list answers "is this mine
+          to do now?" first and orders what survives second.
+
+          ## Install
+
+          ```sh
+          brew install --cask --no-quarantine ryan953/tap/prqueue
+          ```
+
+          `--no-quarantine` because the app is ad-hoc signed but not notarized.
+
+          Or download the zip below, unzip it, and drag **PRQueue.app** to
+          `/Applications`. A hand-installed copy needs **right-click → Open**
+          once, or:
+
+          ```sh
+          xattr -dr com.apple.quarantine "/Applications/PRQueue.app"
+          ```
+
+          ## Requirements
+
+          - macOS 14 or later. The build is universal, so it runs natively on
+            both Apple silicon and Intel.
+          - The [`gh` CLI](https://cli.github.com) installed and logged in. PR
+            Queue reuses its token, so there is no separate sign-in.
+
+          ## Headless
+
+          `PRQueue --report` runs the same triage rules and prints the queue,
+          which is the quickest way to check a ranking change. Add `--all` to
+          print every lane rather than only the ones with items.
+          NOTES
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          ASSET="dist/PRQueue-${VERSION}-macos-universal.zip"
+          # Re-running the workflow for an existing tag should refresh the asset
+          # rather than fail outright.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$ASSET" --clobber
+          else
+            gh release create "$TAG" "$ASSET" \
+              --target "$GITHUB_SHA" \
+              --title "PR Queue ${VERSION}" \
+              --notes-file notes.md
+          fi
+
+  # Hangs off the release job, not `release: published`: that event never
+  # fires, because GitHub suppresses workflow triggers for anything a
+  # GITHUB_TOKEN did, and the release above is created with github.token.
+  # Needs a TAP_TOKEN secret; without it this job fails and the release stands.
+  tap:
+    needs: release
+    uses: ryan953/homebrew-tap/.github/workflows/bump.yml@main
+    with:
+      kind: cask
+      name: prqueue
+      version: ${{ needs.release.outputs.tag }}
+    secrets:
+      TAP_TOKEN: ${{ secrets.TAP_TOKEN }}

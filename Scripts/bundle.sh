@@ -1,41 +1,59 @@
 #!/bin/bash
-# Builds PRQueue and wraps the executable in a macOS .app bundle.
-# Usage: Scripts/bundle.sh [debug|release]
+# Build PRQueue and assemble it into a double-clickable .app bundle.
+#
+# Usage: Scripts/bundle.sh [--version 1.2.3] [--universal] [--output dist]
 set -euo pipefail
 
-CONFIG="${1:-release}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP="$ROOT/PRQueue.app"
-
 cd "$ROOT"
-swift build -c "$CONFIG"
-BIN="$(swift build -c "$CONFIG" --show-bin-path)/PRQueue"
 
+VERSION="0.0.0-dev"
+OUTPUT="dist"
+UNIVERSAL=0
+APP_NAME="PRQueue"
+EXECUTABLE_NAME="PRQueue"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --version) VERSION="$2"; shift 2 ;;
+    --output)  OUTPUT="$2";  shift 2 ;;
+    --universal) UNIVERSAL=1; shift ;;
+    *) echo "Unknown option: $1" >&2; exit 1 ;;
+  esac
+done
+
+# A leading "v" is fine in a git tag but not in CFBundleVersion.
+VERSION="${VERSION#v}"
+
+APP="$OUTPUT/$APP_NAME.app"
+echo "==> Building PRQueue ${VERSION}"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$BIN" "$APP/Contents/MacOS/PRQueue"
 
-cat > "$APP/Contents/Info.plist" <<'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleName</key>              <string>PR Queue</string>
-    <key>CFBundleDisplayName</key>       <string>PR Queue</string>
-    <key>CFBundleExecutable</key>        <string>PRQueue</string>
-    <key>CFBundleIdentifier</key>        <string>com.ryan953.prqueue</string>
-    <key>CFBundlePackageType</key>       <string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.1.0</string>
-    <key>CFBundleVersion</key>           <string>1</string>
-    <key>LSMinimumSystemVersion</key>    <string>14.0</string>
-    <key>NSHighResolutionCapable</key>   <true/>
-    <key>LSApplicationCategoryType</key> <string>public.app-category.developer-tools</string>
-</dict>
-</plist>
-PLIST
+# Built one slice per arch and lipo'd together rather than
+# `swift build --arch arm64 --arch x86_64`, which routes through xcbuild and
+# needs a full Xcode install rather than just the command line tools.
+if [[ "$UNIVERSAL" == 1 ]]; then
+  swift build -c release --triple arm64-apple-macosx14.0
+  swift build -c release --triple x86_64-apple-macosx14.0
+  lipo -create -output "$APP/Contents/MacOS/$EXECUTABLE_NAME" \
+    ".build/arm64-apple-macosx/release/PRQueue" \
+    ".build/x86_64-apple-macosx/release/PRQueue"
+  lipo -info "$APP/Contents/MacOS/$EXECUTABLE_NAME"
+else
+  swift build -c release
+  cp "$(swift build -c release --show-bin-path)/PRQueue" \
+    "$APP/Contents/MacOS/$EXECUTABLE_NAME"
+fi
 
-# An ad hoc signature is enough for a local app and keeps macOS from
-# complaining on every launch.
-codesign --force --sign - "$APP" >/dev/null 2>&1 || true
+echo "==> Assembling $APP"
+sed -e "s/__VERSION__/$VERSION/g" -e "s/__EXECUTABLE__/$EXECUTABLE_NAME/g" \
+  Resources/Info.plist > "$APP/Contents/Info.plist"
+plutil -lint "$APP/Contents/Info.plist" >/dev/null
+printf 'APPL????' > "$APP/Contents/PkgInfo"
 
-echo "Built $APP"
+# Ad-hoc signature. Without it macOS refuses to launch an arm64 binary that has
+# been moved or unzipped, which is exactly what a release download is.
+codesign --force --deep --sign - "$APP" 2>/dev/null || echo "==> codesign unavailable, continuing" >&2
+
+echo "==> Built $APP"
