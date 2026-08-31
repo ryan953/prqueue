@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: swift --version
+
+      - name: Build
+        run: swift build --build-tests
+
+      - name: Test
+        run: swift test
+
+      # The release builds a universal binary, and that is the step most likely
+      # to break on its own, so exercise the same script here rather than
+      # finding out at tag time.
+      - name: Build the app bundle
+        run: Scripts/bundle.sh --version 0.0.0-ci --universal

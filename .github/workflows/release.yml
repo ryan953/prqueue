@@ -1,0 +1,163 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build (e.g. 1.2.3)"
+        required: true
+      update_tap:
+        description: "Bump the prqueue cask in ryan953/homebrew-tap"
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: swift --version
+
+      # Settle on both spellings of the version once, so the tag, the
+      # Info.plist and the tap bump can never disagree about the leading "v".
+      - name: Work out the version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            SHORT="${INPUT_VERSION#v}"
+          else
+            SHORT="${GITHUB_REF_NAME#v}"
+          fi
+          if [[ ! "$SHORT" =~ ^[0-9]+(\.[0-9]+)*([-+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "version must look like 0.1.0 or v0.1.0, got '$SHORT'" >&2
+            exit 1
+          fi
+          echo "version=$SHORT" >> "$GITHUB_OUTPUT"
+          echo "tag=v$SHORT" >> "$GITHUB_OUTPUT"
+          echo "Building $SHORT"
+
+      - name: Test
+        run: swift test
+
+      # Universal so the download runs on both Apple silicon and Intel.
+      - name: Build the app bundle
+        run: Scripts/bundle.sh --version "${{ steps.version.outputs.version }}" --universal
+
+      - name: Check the binary is universal
+        run: lipo -info "dist/PRQueue.app/Contents/MacOS/PRQueue"
+
+      - name: Zip the app
+        run: |
+          cd dist
+          # ditto keeps the bundle's resource forks and symlinks; `zip` does not.
+          ditto -c -k --sequesterRsrc --keepParent "PRQueue.app" \
+            "PRQueue-${{ steps.version.outputs.version }}-macos-universal.zip"
+
+      - name: Write the release notes
+        run: |
+          cat > notes.md <<'NOTES'
+          A native macOS app that turns the GitHub review queue into something
+          workable. Every open pull request lands in exactly one lane — Needs
+          you, My PRs, Blocked on author, Bots, Already approved, Drafts, Stale,
+          Snoozed, Muted — before any scoring, so the list answers "is this mine
+          to do now?" first and orders what survives second.
+
+          ## Install
+
+          ```sh
+          brew install --cask --no-quarantine ryan953/tap/prqueue
+          ```
+
+          `--no-quarantine` because the app is ad-hoc signed but not notarized.
+
+          Or download the zip below, unzip it, and drag **PRQueue.app** to
+          `/Applications`. A hand-installed copy needs **right-click → Open**
+          once, or:
+
+          ```sh
+          xattr -dr com.apple.quarantine "/Applications/PRQueue.app"
+          ```
+
+          ## Requirements
+
+          - macOS 14 or later. The build is universal, so it runs natively on
+            both Apple silicon and Intel.
+          - The [`gh` CLI](https://cli.github.com) installed and logged in. PR
+            Queue reuses its token, so there is no separate sign-in.
+
+          ## Headless
+
+          `PRQueue --report` runs the same triage rules and prints the queue,
+          which is the quickest way to check a ranking change. Add `--all` to
+          print every lane rather than only the ones with items.
+          NOTES
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          ASSET="dist/PRQueue-${VERSION}-macos-universal.zip"
+          # Re-running the workflow for an existing tag should refresh the asset
+          # rather than fail outright.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$ASSET" --clobber
+          else
+            gh release create "$TAG" "$ASSET" \
+              --target "$GITHUB_SHA" \
+              --title "PR Queue ${VERSION}" \
+              --notes-file notes.md
+          fi
+
+      # github.token is scoped to this repository, so pushing to the tap needs a
+      # PAT in the TAP_TOKEN secret, with Contents: Read+Write on
+      # ryan953/homebrew-tap. This repository is public, so the tap's bump
+      # script needs no extra scope to download the asset it checksums. With no
+      # token the release still stands; only the cask is left behind, and the
+      # summary says how to bump it by hand.
+      - name: Bump the Homebrew cask
+        if: ${{ github.event_name == 'push' || inputs.update_tap }}
+        env:
+          TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TAP_TOKEN}" ]; then
+            echo "::warning::TAP_TOKEN is not set — leaving ryan953/homebrew-tap alone."
+            {
+              echo "### Homebrew tap not updated"
+              echo
+              echo "\`TAP_TOKEN\` is not set. Bump the cask by hand:"
+              echo
+              echo '```sh'
+              echo "scripts/bump-cask.sh prqueue ${VERSION}"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git clone --depth 1 \
+            "https://x-access-token:${TAP_TOKEN}@github.com/ryan953/homebrew-tap.git" tap
+          cd tap
+          # The tap owns the bump logic (find the release asset, rewrite version
+          # and sha256). Reuse it rather than keeping a second copy of that
+          # knowledge here.
+          HOMEBREW_GITHUB_API_TOKEN="${TAP_TOKEN}" \
+            scripts/bump-cask.sh prqueue "${VERSION}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "prqueue ${VERSION}"
+          git push
+          echo "Bumped ryan953/tap/prqueue to ${VERSION}" >> "$GITHUB_STEP_SUMMARY"
