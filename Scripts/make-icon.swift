@@ -36,11 +36,11 @@ func render(size: Int) -> CGImage? {
     context.saveGState()
     context.addPath(squircle)
     context.clip()
-    // Teal rather than the indigo the sibling apps use, so the two are still
-    // told apart in a Dock at 32 points.
+    // Dark slate, so the added and removed rows are the only saturated things in
+    // the square and the icon stays apart from the indigo sibling apps.
     let colors = [
-        CGColor(red: 0.10, green: 0.72, blue: 0.60, alpha: 1),
-        CGColor(red: 0.05, green: 0.44, blue: 0.55, alpha: 1),
+        CGColor(red: 0.25, green: 0.31, blue: 0.44, alpha: 1),
+        CGColor(red: 0.10, green: 0.13, blue: 0.21, alpha: 1),
     ] as CFArray
     if let gradient = CGGradient(
         colorsSpace: CGColorSpaceCreateDeviceRGB(),
@@ -56,27 +56,27 @@ func render(size: Int) -> CGImage? {
     }
     context.restoreGState()
 
-    // The lanes: one row at full strength above rows that fade and shorten. That
-    // is the whole idea of the app — a queue sorted so the top of it is the part
-    // that wants you.
-    let rowHeight = rect.height * 0.125
-    let gap = rect.height * 0.062
-    let left = rect.minX + rect.width * 0.17
-    let right = rect.maxX - rect.width * 0.17
+    // A diff: one row added, one removed, between two untouched ones. Green and
+    // red carry the meaning, so it still reads once the + and - stop resolving
+    // at the smallest sizes.
+    let rowHeight = rect.height * 0.132
+    let gap = rect.height * 0.055
+    let left = rect.minX + rect.width * 0.14
+    let span = rect.maxX - rect.width * 0.14 - left
     let totalHeight = rowHeight * 4 + gap * 3
     var top = rect.midY + totalHeight / 2 - rowHeight
 
-    let alphas: [CGFloat] = [1.0, 0.52, 0.36, 0.24]
-    let widths: [CGFloat] = [1.0, 0.82, 0.64, 0.46]
+    let unchanged = CGColor(gray: 1, alpha: 0.32)
+    let rows: [(color: CGColor, width: CGFloat, sign: Int)] = [
+        (unchanged, 0.60, 0),
+        (CGColor(red: 0.24, green: 0.80, blue: 0.44, alpha: 1), 0.96, 1),
+        (CGColor(red: 0.98, green: 0.36, blue: 0.40, alpha: 1), 0.76, -1),
+        (unchanged, 0.48, 0),
+    ]
 
-    for row in 0..<4 {
-        let bar = CGRect(
-            x: left,
-            y: top,
-            width: (right - left) * widths[row],
-            height: rowHeight
-        )
-        context.setFillColor(CGColor(gray: 1, alpha: alphas[row]))
+    for row in rows {
+        let bar = CGRect(x: left, y: top, width: span * row.width, height: rowHeight)
+        context.setFillColor(row.color)
         context.addPath(CGPath(
             roundedRect: bar,
             cornerWidth: rowHeight / 2,
@@ -84,21 +84,24 @@ func render(size: Int) -> CGImage? {
             transform: nil
         ))
         context.fillPath()
+
+        if row.sign != 0 {
+            let centreX = bar.minX + rowHeight * 0.62
+            let arm = rowHeight * 0.26
+            context.setStrokeColor(CGColor(gray: 1, alpha: 0.96))
+            context.setLineWidth(s * 0.026)
+            context.setLineCap(.round)
+            context.move(to: CGPoint(x: centreX - arm, y: bar.midY))
+            context.addLine(to: CGPoint(x: centreX + arm, y: bar.midY))
+            if row.sign > 0 {
+                context.move(to: CGPoint(x: centreX, y: bar.midY - arm))
+                context.addLine(to: CGPoint(x: centreX, y: bar.midY + arm))
+            }
+            context.strokePath()
+        }
+
         top -= rowHeight + gap
     }
-
-    // A warm dot against the cool background, so the eye lands on the top lane
-    // before it reads anything else.
-    let dotRadius = rowHeight * 0.30
-    let firstRowMidY = rect.midY + totalHeight / 2 - rowHeight / 2
-    context.setFillColor(CGColor(red: 0.99, green: 0.74, blue: 0.18, alpha: 1))
-    context.addEllipse(in: CGRect(
-        x: left - dotRadius * 2.9,
-        y: firstRowMidY - dotRadius,
-        width: dotRadius * 2,
-        height: dotRadius * 2
-    ))
-    context.fillPath()
 
     return context.makeImage()
 }
