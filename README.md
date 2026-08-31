@@ -57,10 +57,18 @@ The app reads its token from `gh`, so there is no separate login.
 ## Install
 
 ```sh
-brew install --cask --no-quarantine ryan953/tap/prqueue
+brew install --cask ryan953/tap/prqueue
 ```
 
-`--no-quarantine` because the app is ad-hoc signed but not notarized.
+Or download the zip from [Releases](../../releases), unzip it, and drag
+**PRQueue.app** to `/Applications`.
+
+The build is ad-hoc signed rather than notarized, so the first launch needs
+**right-click → Open** (once), or:
+
+```sh
+xattr -dr com.apple.quarantine "/Applications/PRQueue.app"
+```
 
 ## Build and run
 
