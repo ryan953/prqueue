@@ -100,10 +100,24 @@ private struct GeneralSettings: View {
 
         Form {
             Section("Account") {
-                LabeledContent("Signed in as", value: state.viewer.isEmpty ? "unknown" : state.viewer)
-                Text("The token comes from the gh command line tool. Run `gh auth login` to change it.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                if let problem = state.problem, problem.isFixedOutsideApp {
+                    LabeledContent("Signed in as") {
+                        Label(problem.title, systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.red)
+                    }
+                } else {
+                    LabeledContent("Signed in as", value: state.viewer.isEmpty ? "unknown" : state.viewer)
+                }
+                HStack {
+                    Text("The token comes from the gh command line tool.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Log In Again…") {
+                        try? TerminalCommand.run("gh auth login -h github.com")
+                    }
+                    .help("Opens Terminal and runs: gh auth login -h github.com")
+                }
             }
             Section("Refresh") {
                 Picker("Check GitHub every", selection: $state.preferences.refreshMinutes) {

@@ -1,12 +1,22 @@
 import Foundation
 
-enum GitHubClientError: LocalizedError {
+enum GitHubClientError: LocalizedError, Equatable {
+    case unauthorized
+    case rateLimited(resetAt: Date?)
     case http(Int, String)
     case graphQL([String])
     case emptyResponse
 
     var errorDescription: String? {
         switch self {
+        case .unauthorized:
+            "GitHub rejected the token from gh (HTTP 401)."
+        case .rateLimited(let resetAt):
+            if let resetAt {
+                "GitHub rate limit reached. It resets at \(resetAt.formatted(date: .omitted, time: .shortened))."
+            } else {
+                "GitHub rate limit reached."
+            }
         case .http(let code, let body):
             "GitHub returned HTTP \(code): \(body.prefix(240))"
         case .graphQL(let messages):
@@ -14,6 +24,25 @@ enum GitHubClientError: LocalizedError {
         case .emptyResponse:
             "GitHub returned no data."
         }
+    }
+
+    /// Turns a failed HTTP response into the case the UI can act on. GitHub
+    /// signals rate limits with 403 or 429, and only the headers or body tell
+    /// them apart from a permission error.
+    static func from(status: Int, headers: [AnyHashable: Any], body: String) -> GitHubClientError {
+        if status == 401 { return .unauthorized }
+        func header(_ name: String) -> String? {
+            headers.first { ($0.key as? String)?.lowercased() == name }?.value as? String
+        }
+        let exhausted = header("x-ratelimit-remaining") == "0"
+            || body.localizedCaseInsensitiveContains("rate limit")
+        if status == 429 || (status == 403 && exhausted) {
+            let reset = header("x-ratelimit-reset")
+                .flatMap(TimeInterval.init)
+                .map(Date.init(timeIntervalSince1970:))
+            return .rateLimited(resetAt: reset)
+        }
+        return .http(status, body)
     }
 }
 
@@ -73,7 +102,9 @@ struct GitHubClient: Sendable {
     }
 
     private func fetchPage(search: String, after: String?) async throws -> GQLSearch {
-        let query = """
+        var variables: [String: Any] = ["q": search, "first": Self.pageSize]
+        if let after { variables["after"] = after }
+        let data: GQLSearchData = try await Self.post(token: token, query: """
         query($q: String!, $first: Int!, $after: String) {
           search(query: $q, type: ISSUE, first: $first, after: $after) {
             issueCount
@@ -82,33 +113,53 @@ struct GitHubClient: Sendable {
           }
         }
         \(Self.fragment)
-        """
+        """, variables: variables)
+        return data.search
+    }
 
-        var request = URLRequest(url: Self.endpoint)
+    /// The account the token belongs to. Asked through the same endpoint as the
+    /// queue, so a bad token or a rate limit fails in the same recognizable way.
+    static func viewerLogin(token: String) async throws -> String {
+        let data: GQLViewerData = try await post(token: token, query: "query { viewer { login } }", variables: [:])
+        return data.viewer.login
+    }
+
+    private static func post<T: Decodable & Sendable>(
+        token: String,
+        query: String,
+        variables: [String: Any]
+    ) async throws -> T {
+        var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("PRQueue", forHTTPHeaderField: "User-Agent")
 
-        var variables: [String: Any] = ["q": search, "first": Self.pageSize]
-        if let after { variables["after"] = after }
         request.httpBody = try JSONSerialization.data(
             withJSONObject: ["query": query, "variables": variables]
         )
 
         let (data, response) = try await URLSession.shared.data(for: request)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            throw GitHubClientError.http(http.statusCode, String(decoding: data, as: UTF8.self))
+            throw GitHubClientError.from(
+                status: http.statusCode,
+                headers: http.allHeaderFields,
+                body: String(decoding: data, as: UTF8.self)
+            )
         }
 
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        let envelope = try decoder.decode(GQLEnvelope<GQLSearchData>.self, from: data)
+        let envelope = try decoder.decode(GQLEnvelope<T>.self, from: data)
         if let errors = envelope.errors, !errors.isEmpty {
+            // GraphQL reports a spent point budget with HTTP 200.
+            if errors.contains(where: { $0.type == "RATE_LIMITED" }) {
+                throw GitHubClientError.rateLimited(resetAt: nil)
+            }
             throw GitHubClientError.graphQL(errors.map(\.message))
         }
-        guard let search = envelope.data?.search else { throw GitHubClientError.emptyResponse }
-        return search
+        guard let result = envelope.data else { throw GitHubClientError.emptyResponse }
+        return result
     }
 }
 

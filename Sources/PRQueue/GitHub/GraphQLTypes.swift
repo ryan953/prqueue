@@ -11,6 +11,15 @@ struct GQLEnvelope<T: Decodable & Sendable>: Decodable, Sendable {
 
 struct GQLError: Decodable, Sendable {
     let message: String
+    let type: String?
+}
+
+struct GQLViewerData: Decodable, Sendable {
+    let viewer: GQLViewer
+}
+
+struct GQLViewer: Decodable, Sendable {
+    let login: String
 }
 
 struct GQLSearchData: Decodable, Sendable {

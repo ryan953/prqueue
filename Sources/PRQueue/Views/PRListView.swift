@@ -35,13 +35,20 @@ struct PRListView: View {
                 }
             }
         }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if let problem = state.problem, !state.pullRequests.isEmpty {
+                ProblemBanner(problem: problem)
+            }
+        }
         .navigationTitle(state.selectedLane.title)
         .navigationSubtitle("\(rows.count) pull request\(rows.count == 1 ? "" : "s")")
     }
 
     @ViewBuilder
     private var emptyState: some View {
-        if state.isLoading && state.pullRequests.isEmpty {
+        if let problem = state.problem, state.pullRequests.isEmpty {
+            ProblemView(problem: problem)
+        } else if state.isLoading && state.pullRequests.isEmpty {
             ContentUnavailableView {
                 Label("Loading your queue", systemImage: "arrow.down.circle")
             } description: {

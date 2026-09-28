@@ -4,6 +4,7 @@ enum GitHubAuthError: LocalizedError {
     case ghNotFound
     case ghFailed(String)
     case noToken
+    case notLoggedIn
 
     var errorDescription: String? {
         switch self {
@@ -13,6 +14,8 @@ enum GitHubAuthError: LocalizedError {
             "gh auth token failed: \(message)"
         case .noToken:
             "gh returned an empty token. Log in with: gh auth login"
+        case .notLoggedIn:
+            "gh is not logged in to github.com. Log in with: gh auth login"
         }
     }
 }
@@ -48,6 +51,10 @@ enum GitHubAuth {
         let token: String
         do {
             token = try runCapture(gh, ["auth", "token"])
+        } catch GitHubAuthError.ghFailed(let message)
+            where message.localizedCaseInsensitiveContains("not logged")
+            || message.localizedCaseInsensitiveContains("no oauth token") {
+            throw GitHubAuthError.notLoggedIn
         } catch let error as GitHubAuthError {
             throw error
         } catch {
@@ -55,14 +62,6 @@ enum GitHubAuth {
         }
         guard !token.isEmpty else { throw GitHubAuthError.noToken }
         return token
-    }
-
-    /// The logged in account, used to tell "my PRs" from everyone else's.
-    static func viewerLogin() throws -> String {
-        guard let gh = ghExecutable() else { throw GitHubAuthError.ghNotFound }
-        let login = try runCapture(gh, ["api", "user", "--jq", ".login"])
-        guard !login.isEmpty else { throw GitHubAuthError.noToken }
-        return login
     }
 
     @discardableResult
