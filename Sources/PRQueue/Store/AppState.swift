@@ -7,7 +7,7 @@ final class AppState {
     // MARK: Data
     private(set) var pullRequests: [PullRequest] = []
     private(set) var isLoading = false
-    private(set) var lastError: String?
+    private(set) var problem: QueueProblem?
     private(set) var lastRefresh: Date?
     private(set) var viewer: String = ""
 
@@ -96,20 +96,32 @@ final class AppState {
     func refresh() async {
         guard !isLoading else { return }
         isLoading = true
-        lastError = nil
+        // The problem stays up while retrying, so the recovery steps do not
+        // flash away and come back.
         do {
             let token = try GitHubAuth.token()
-            let login = viewer.isEmpty ? try GitHubAuth.viewerLogin() : viewer
+            let login = viewer.isEmpty ? try await GitHubClient.viewerLogin(token: token) : viewer
             viewer = login
             let client = GitHubClient(token: token, viewer: login)
             pullRequests = try await client.fetchQueue()
             lastRefresh = .now
             pruneExpiredSnoozes()
             wakeChangedPullRequests()
+            problem = nil
         } catch {
-            lastError = error.localizedDescription
+            let problem = QueueProblem(error)
+            // A new login can be a different account.
+            if problem.isFixedOutsideApp { viewer = "" }
+            self.problem = problem
         }
         isLoading = false
+    }
+
+    /// Called when the app comes to the front. After a login in Terminal the
+    /// user switches back, and the queue should load without another click.
+    func refreshIfFixedOutsideApp() async {
+        guard problem?.isFixedOutsideApp == true else { return }
+        await refresh()
     }
 
     func startAutoRefresh() {

@@ -29,7 +29,7 @@ func runReport(showEmptyLanes: Bool) async {
     let preferences = store.load()
     do {
         let token = try GitHubAuth.token()
-        let viewer = try GitHubAuth.viewerLogin()
+        let viewer = try await GitHubClient.viewerLogin(token: token)
         let client = GitHubClient(token: token, viewer: viewer)
         let pullRequests = try await client.fetchQueue()
         let engine = TriageEngine(preferences: preferences, viewer: viewer)
@@ -50,7 +50,11 @@ func runReport(showEmptyLanes: Bool) async {
             print("")
         }
     } catch {
-        FileHandle.standardError.write(Data("error: \(error.localizedDescription)\n".utf8))
+        let problem = QueueProblem(error)
+        var text = "error: \(problem.title)\n\(problem.message)\n"
+        if let command = problem.fixCommand { text += "fix: \(command)\n" }
+        text += "detail: \(problem.detail)\n"
+        FileHandle.standardError.write(Data(text.utf8))
         exit(1)
     }
 }

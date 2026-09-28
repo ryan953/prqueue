@@ -19,11 +19,11 @@ struct ContentView: View {
         .searchable(text: $state.searchText, placement: .toolbar, prompt: "Filter by title, repo, author, or team")
         .toolbar {
             ToolbarItem(placement: .status) {
-                if let error = state.lastError {
-                    Label(error, systemImage: "exclamationmark.triangle.fill")
+                if let problem = state.problem {
+                    Label(problem.title, systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.red)
                         .lineLimit(1)
-                        .help(error)
+                        .help(problem.detail)
                 } else if let last = state.lastRefresh {
                     Text("Updated \(last.formatted(date: .omitted, time: .shortened))")
                         .foregroundStyle(.secondary)

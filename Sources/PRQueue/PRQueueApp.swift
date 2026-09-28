@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 
@@ -12,6 +13,9 @@ struct PRQueueApp: App {
                 .task {
                     await state.refresh()
                     state.startAutoRefresh()
+                }
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+                    Task { await state.refreshIfFixedOutsideApp() }
                 }
         }
         .defaultSize(width: 1_280, height: 800)
